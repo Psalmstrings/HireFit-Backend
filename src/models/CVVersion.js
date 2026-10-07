@@ -77,6 +77,22 @@ const cvVersionSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  alignmentScoreBefore: {
+    type: Number,
+    default: null
+  },
+  alignmentScoreAfter: {
+    type: Number,
+    default: null
+  },
+  optimizationMode: {
+    type: String,
+    enum: ['balanced', 'aggressive', 'conservative'],
+    default: 'balanced'
+  },
+  candidateConfirmedFacts: [{
+    type: mongoose.Schema.Types.Mixed
+  }],
   analysis: {
     type: mongoose.Schema.Types.Mixed,
     default: null

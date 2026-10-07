@@ -14,19 +14,24 @@ You may rewrite wording, improve clarity, improve professional language, priorit
 You MUST NOT remove jobs, responsibilities, achievements, skills, education, certifications, projects or other substantive sections simply because they are less relevant.
 
 You MUST NOT invent information.
-
 You MUST NOT fabricate metrics.
-
-You MUST NOT fabricate skills.
-
+You MUST NOT fabricate skills (ONLY skills present in the Master CV or explicitly marked as Candidate-Confirmed may be added).
 You MUST NOT fabricate experience.
-
 You MUST NOT fabricate qualifications.
+
+CANDIDATE-CONFIRMED FACTS RULE:
+If Candidate-Confirmed Facts are provided, they represent verified capabilities confirmed directly by the user (e.g. working knowledge of a skill like TypeScript). You ARE authorized and encouraged to integrate these confirmed items naturally into the Skills list, Summary, and relevant technology stacks.
+CRITICAL: If a skill or requirement is NEITHER in the Master CV NOR in the Candidate-Confirmed Facts list, it MUST NOT be added to the CV as experience or capability.
+
+OPTIMIZATION MODES:
+- 'balanced' (Default): Balanced high-impact professional tailoring, active verbs, and natural keyword alignment.
+- 'aggressive': Maximum keyword density and prominent ATS positioning for all verified and confirmed capabilities.
+- 'conservative': Subtle refinements, keeping existing phrasing very close to original Master CV while integrating confirmed facts.
 
 The optimized CV should be a refined version of the complete master CV, not a summary of it.
 
 Think:
-PRESERVE EVERYTHING → IDENTIFY RELEVANCE → IMPROVE WORDING → IMPROVE POSITIONING → MAINTAIN COMPLETENESS.
+PRESERVE EVERYTHING → CHECK CONFIRMED FACTS → IDENTIFY RELEVANCE → APPLY OPTIMIZATION MODE → IMPROVE WORDING & POSITIONING → ZERO FABRICATION.
 
 OUTPUT JSON FORMAT:
 {
@@ -100,7 +105,7 @@ OUTPUT JSON FORMAT:
  * Validate and restore any content that the AI may have dropped.
  * Non-destructive enforcement layer: Master CV content is GUARANTEED to survive.
  */
-const enforceNonDestructivePreservation = (masterCv, candidateOptimizedCv) => {
+const enforceNonDestructivePreservation = (masterCv, candidateOptimizedCv, candidateConfirmedFacts = []) => {
   const optimized = JSON.parse(JSON.stringify(candidateOptimizedCv || masterCv));
   const restoredChanges = [];
 
@@ -155,13 +160,34 @@ const enforceNonDestructivePreservation = (masterCv, candidateOptimizedCv) => {
     };
   });
 
-  // 4. Skills preservation: Ensure ALL skills from master are present, with target skills prioritized first
+  // 4. Skills preservation: Ensure ALL skills from master are present, plus candidate-confirmed skills
   const masterTech = masterCv.skills?.technical || [];
   const optTech = optimized.skills?.technical || [];
-  const mergedTech = [...optTech];
+  const confirmedSkillNames = (candidateConfirmedFacts || [])
+    .filter(f => f && f.confirmed !== false && f.name)
+    .map(f => f.name.toLowerCase());
+
+  // Filter out any newly added skills that are neither in master nor candidate-confirmed
+  const validOptTech = optTech.filter(skill => {
+    const lower = skill.toLowerCase();
+    const isInMaster = masterTech.some(m => m.toLowerCase() === lower);
+    const isConfirmed = confirmedSkillNames.includes(lower);
+    return isInMaster || isConfirmed;
+  });
+
+  const mergedTech = [...validOptTech];
   masterTech.forEach(t => {
     if (!mergedTech.some(s => s.toLowerCase() === t.toLowerCase())) {
       mergedTech.push(t);
+    }
+  });
+
+  // Ensure all candidate-confirmed skills are included
+  (candidateConfirmedFacts || []).forEach(f => {
+    if (f && f.confirmed !== false && f.name) {
+      if (!mergedTech.some(s => s.toLowerCase() === f.name.toLowerCase())) {
+        mergedTech.unshift(f.name);
+      }
     }
   });
 
@@ -245,7 +271,10 @@ const enforceNonDestructivePreservation = (masterCv, candidateOptimizedCv) => {
 /**
  * Intelligent rule-based non-destructive optimizer fallback
  */
-const fallbackOptimizeCv = (masterCv, parsedJob) => {
+/**
+ * Intelligent rule-based non-destructive optimizer fallback
+ */
+const fallbackOptimizeCv = (masterCv, parsedJob, matchAnalysis = {}, candidateConfirmedFacts = [], optimizationMode = 'balanced') => {
   const jobTitle = parsedJob.jobTitle || 'Target Role';
   const targetCompany = parsedJob.company || '';
   const reqSkills = parsedJob.requiredSkills || [];
@@ -253,16 +282,35 @@ const fallbackOptimizeCv = (masterCv, parsedJob) => {
   const originalSummary = masterCv.professionalSummary || 'Experienced and dedicated professional.';
   const existingTech = masterCv.skills?.technical || [];
 
+  // Identify confirmed skills (from user confirmation flow)
+  const confirmedSkills = (candidateConfirmedFacts || [])
+    .filter(f => f && f.confirmed !== false && f.name)
+    .map(f => f.name);
+
   // Identify genuine overlapping skills for prioritization
   const relevantOverlap = existingTech.filter(t => 
     reqSkills.some(r => r.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(r.toLowerCase()))
   );
-  const prioritizedSkills = [...relevantOverlap, ...existingTech.filter(t => !relevantOverlap.includes(t))];
 
-  const overlapString = relevantOverlap.length > 0 ? relevantOverlap.slice(0, 4).join(', ') : existingTech.slice(0, 3).join(', ');
+  // Prioritize: confirmed skills first, then master overlaps, then rest of master
+  const prioritizedSkills = [...new Set([...confirmedSkills, ...relevantOverlap, ...existingTech])];
 
-  // Strengthen summary without losing original scope
-  const optimizedSummary = `${originalSummary.replace(/\.$/, '')}, with demonstrated expertise in ${overlapString || 'core engineering fundamentals'}. Positioned to deliver impactful results as a ${jobTitle}${targetCompany ? ' at ' + targetCompany : ''} by applying verified skills and rigorous execution.`;
+  const allActiveSkills = [...new Set([...confirmedSkills, ...relevantOverlap])];
+  const overlapString = allActiveSkills.length > 0 ? allActiveSkills.slice(0, 4).join(', ') : existingTech.slice(0, 3).join(', ');
+
+  // Mode-based summary adjustment
+  let optimizedSummary = originalSummary;
+  if (optimizationMode === 'aggressive') {
+    optimizedSummary = `High-impact ${jobTitle} delivering proven results with core proficiencies in ${overlapString || 'software engineering'}. ${originalSummary.replace(/\.$/, '')}, strategically aligned for ${targetCompany ? targetCompany + ' target objectives' : 'production scale and engineering excellence'}.`;
+  } else if (optimizationMode === 'conservative') {
+    optimizedSummary = originalSummary;
+    if (overlapString && !originalSummary.toLowerCase().includes(overlapString.toLowerCase())) {
+      optimizedSummary = `${originalSummary.replace(/\.$/, '')}. Background includes demonstrated proficiency in ${overlapString}.`;
+    }
+  } else {
+    // 'balanced' (default)
+    optimizedSummary = `${originalSummary.replace(/\.$/, '')}, with demonstrated expertise in ${overlapString || 'core engineering fundamentals'}. Positioned to deliver impactful results as a ${jobTitle}${targetCompany ? ' at ' + targetCompany : ''} by applying verified skills and rigorous execution.`;
+  }
 
   const changes = [
     {
@@ -270,10 +318,24 @@ const fallbackOptimizeCv = (masterCv, parsedJob) => {
       field: 'professionalSummary',
       before: originalSummary,
       after: optimizedSummary,
-      rationale: `Aligned your summary toward ${jobTitle}, foregrounding genuine competencies (${overlapString || 'core competencies'}) already evidenced in your master CV.`,
+      rationale: `Aligned your summary toward ${jobTitle} (${optimizationMode} mode), foregrounding genuine competencies (${overlapString || 'core competencies'}) without fabricating claims.`,
       status: 'accepted'
     }
   ];
+
+  // Document confirmed facts as explicit changes
+  confirmedSkills.forEach(skill => {
+    if (!existingTech.some(t => t.toLowerCase() === skill.toLowerCase())) {
+      changes.push({
+        section: 'Skills & Competencies',
+        field: 'skills.technical',
+        before: '(Not previously evidenced in Master CV)',
+        after: skill,
+        rationale: `Integrated candidate-confirmed competency '${skill}' (source: candidate_confirmed) into technical skills.`,
+        status: 'accepted'
+      });
+    }
+  });
 
   // Optimize work experience bullet points: replace passive phrasing with strong action verbs
   const optimizedWorkExperience = (masterCv.workExperience || []).map((work, wIdx) => {
@@ -320,7 +382,7 @@ const fallbackOptimizeCv = (masterCv, parsedJob) => {
     languages: masterCv.languages || []
   };
 
-  const finalOptimized = enforceNonDestructivePreservation(masterCv, optimizedCv);
+  const finalOptimized = enforceNonDestructivePreservation(masterCv, optimizedCv, candidateConfirmedFacts);
 
   const preservedSections = [
     'Complete Professional Summary',
@@ -333,10 +395,10 @@ const fallbackOptimizeCv = (masterCv, parsedJob) => {
   ];
 
   const improvedSections = [
-    'Professional Summary wording & target role alignment',
+    `Professional Summary wording & target role alignment (${optimizationMode})`,
     'Experience positioning & strong action verbs',
     'Competency prioritization for ATS indexing',
-    'Bullet point impact metrics clarity'
+    'Candidate-confirmed capabilities integration'
   ];
 
   return {
@@ -352,14 +414,30 @@ const fallbackOptimizeCv = (masterCv, parsedJob) => {
  * @param {object} masterCv 
  * @param {object} parsedJob 
  * @param {object} matchAnalysis 
+ * @param {Array} candidateConfirmedFacts 
+ * @param {string} optimizationMode 
  * @returns {Promise<{ optimizedCv: object, changes: Array, preservedSections: Array, improvedSections: Array }>}
  */
-const optimizeCvWithAI = async (masterCv, parsedJob, matchAnalysis) => {
+const optimizeCvWithAI = async (masterCv, parsedJob, matchAnalysis = {}, candidateConfirmedFacts = [], optimizationMode = 'balanced') => {
   const messages = [
     { role: 'system', content: CV_OPTIMIZER_SYSTEM_PROMPT },
     {
       role: 'user',
-      content: `Optimize this candidate's MASTER CV for the target job. PRESERVE ALL SUBSTANTIVE CONTENT (jobs, skills, education, certifications, projects, sections):\n\nMASTER CV:\n${JSON.stringify(masterCv, null, 2)}\n\nTARGET JOB POSTING:\n${JSON.stringify(parsedJob, null, 2)}\n\nMATCH ANALYSIS:\n${JSON.stringify(matchAnalysis || {}, null, 2)}`
+      content: `Optimize this candidate's MASTER CV for the target job.
+PRESERVE ALL SUBSTANTIVE CONTENT (jobs, skills, education, certifications, projects, sections).
+OPTIMIZATION MODE: ${optimizationMode.toUpperCase()}
+
+MASTER CV:
+${JSON.stringify(masterCv, null, 2)}
+
+TARGET JOB POSTING:
+${JSON.stringify(parsedJob, null, 2)}
+
+CANDIDATE-CONFIRMED FACTS (VERIFIED BY USER - SAFE TO INTEGRATE NATURALLY):
+${JSON.stringify(candidateConfirmedFacts, null, 2)}
+
+MATCH ANALYSIS:
+${JSON.stringify(matchAnalysis || {}, null, 2)}`
     }
   ];
 
@@ -382,11 +460,11 @@ const optimizeCvWithAI = async (masterCv, parsedJob, matchAnalysis) => {
 
   if (!rawOptimized) {
     console.log('Activating non-destructive CV optimization engine fallback...');
-    return fallbackOptimizeCv(masterCv, parsedJob);
+    return fallbackOptimizeCv(masterCv, parsedJob, matchAnalysis, candidateConfirmedFacts, optimizationMode);
   }
 
-  // Run non-destructive preservation enforcement layer
-  const fullyPreservedCv = enforceNonDestructivePreservation(masterCv, rawOptimized);
+  // Run non-destructive preservation enforcement layer with confirmed facts
+  const fullyPreservedCv = enforceNonDestructivePreservation(masterCv, rawOptimized, candidateConfirmedFacts);
 
   if (preservedSections.length === 0) {
     preservedSections = [
@@ -402,7 +480,7 @@ const optimizeCvWithAI = async (masterCv, parsedJob, matchAnalysis) => {
 
   if (improvedSections.length === 0) {
     improvedSections = [
-      'Professional Summary wording & role alignment',
+      `Professional Summary wording & role alignment (${optimizationMode})`,
       'Relevant experience positioning',
       'Job-specific keyword integration',
       'Bullet point clarity & action verbs',

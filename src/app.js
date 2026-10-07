@@ -17,6 +17,7 @@ const applicationRoutes = require('./routes/applicationRoutes');
 const coverLetterRoutes = require('./routes/coverLetterRoutes');
 const interviewRoutes = require('./routes/interviewRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const optimizerRoutes = require('./routes/optimizerRoutes');
 
 const app = express();
 
@@ -114,6 +115,7 @@ app.use('/api/users', authRoutes); // /api/users/me handled by auth routes
 app.use('/api/cvs', cvRoutes);
 app.use('/api/jobs', jobRoutes);
 app.use('/api/analysis', analysisRoutes);
+app.use('/api/optimizer', optimizerRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/cover-letters', coverLetterRoutes);
 app.use('/api/interviews', interviewRoutes);
