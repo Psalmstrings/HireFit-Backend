@@ -26,36 +26,66 @@ app.use(helmet({
   contentSecurityPolicy: false
 }));
 
-// Dynamic CORS to permit any localhost/127.0.0.1 development port and configured CLIENT_URL
-const allowedOrigins = [
-  'https://hire-fitt.vercel.app',
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',
-  'http://localhost:3000',
-  process.env.CLIENT_URL
-].filter(Boolean);
+// Function to dynamically validate allowed origins
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // Allow non-browser requests (Postman, curl, server-to-server)
+
+  const allowedList = [
+    'https://hire-fitt.vercel.app',
+    'https://hirefit.vercel.app',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:5175',
+    'http://localhost:3000',
+    process.env.CLIENT_URL ? process.env.CLIENT_URL.replace(/\/$/, '') : null
+  ].filter(Boolean);
+
+  if (allowedList.includes(origin)) return true;
+
+  // Allow all Vercel deployments (production, previews, branch deploys)
+  if (/^https:\/\/([a-zA-Z0-9_-]+\.)*vercel\.app$/i.test(origin)) return true;
+
+  // Allow Render domains
+  if (/^https:\/\/([a-zA-Z0-9_-]+\.)*onrender\.com$/i.test(origin)) return true;
+
+  // Allow localhost or 127.0.0.1 on any port
+  if (/^http:\/\/localhost:\d+$/i.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/i.test(origin)) return true;
+
+  return false;
+};
+
+// Explicit CORS Headers & Preflight Middleware (must be first, before routes & limiters)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && isAllowedOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  }
+
+  // Preflight requests return 200 immediately with headers
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
 
 const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (
-      allowedOrigins.includes(origin) ||
-      /^http:\/\/localhost:\d+$/.test(origin) ||
-      /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)
-    ) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    // Return null, false instead of throwing Error to prevent 500 status on preflights
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
 // Body parsers with size limits
 app.use(express.json({ limit: '2mb' }));
