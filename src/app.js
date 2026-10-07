@@ -28,6 +28,7 @@ app.use(helmet({
 
 // Dynamic CORS to permit any localhost/127.0.0.1 development port and configured CLIENT_URL
 const allowedOrigins = [
+  'https://hire-fitt.vercel.app',
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:5175',
