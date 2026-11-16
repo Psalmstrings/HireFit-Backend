@@ -16,7 +16,10 @@ const getTransporter = () => {
         auth: {
           user: EMAIL_USER,
           pass: EMAIL_PASS
-        }
+        },
+        connectionTimeout: 5000,
+        greetingTimeout: 5000,
+        socketTimeout: 8000
       });
     } else {
       transporter = null;
@@ -171,10 +174,39 @@ const wrapHtmlEmail = ({ title, preheader, content, actionBtn, footerText }) => 
  * Send an email using Nodemailer Gmail transport or simulated logger
  */
 const sendMail = async ({ to, subject, html, text }) => {
+  // 1. If Resend API Key is set, deliver via HTTPS port 443 (immune to cloud host SMTP port blocks)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: process.env.EMAIL_FROM || `HireFit Team <onboarding@resend.dev>`,
+          to: [to],
+          subject,
+          html,
+          text
+        })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        console.log(`📧 [EMAIL SENT via Resend HTTP API] Id: ${data.id} to ${to}`);
+        return { success: true, messageId: data.id, to };
+      }
+      console.warn(`⚠️ [Resend API Error]:`, data);
+    } catch (apiErr) {
+      console.error(`❌ [Resend Fetch Error]:`, apiErr.message);
+    }
+  }
+
+  // 2. Gmail Nodemailer SMTP
   const mailTransporter = getTransporter();
 
   if (!mailTransporter) {
-    console.log(`\n📧 [EMAIL SIMULATION — Configure EMAIL_PASS for live Gmail SMTP]`);
+    console.log(`\n📧 [EMAIL SIMULATION — Configure EMAIL_PASS for live Gmail SMTP or RESEND_API_KEY for HTTP API]`);
     console.log(`   To: ${to}`);
     console.log(`   Subject: ${subject}`);
     console.log(`   From: ${EMAIL_FROM}`);
@@ -193,6 +225,9 @@ const sendMail = async ({ to, subject, html, text }) => {
     return { success: true, messageId: info.messageId, to };
   } catch (error) {
     console.error(`❌ [EMAIL ERROR] Failed to send email to ${to}:`, error.message);
+    if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout') || error.message?.includes('Greeting never received')) {
+      console.warn(`💡 [EMAIL ADVISORY] Render Free tier blocks outbound SMTP ports 465/587. To send emails directly from Render without port blocking, either set RESEND_API_KEY in Render Environment Variables or upgrade from Free to Starter on Render.`);
+    }
     return { success: false, error: error.message };
   }
 };

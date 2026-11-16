@@ -63,16 +63,14 @@ const register = async (req, res, next) => {
       lastLogin: new Date()
     });
 
-    // Send verification email via Gmail Nodemailer
-    try {
-      await sendVerificationEmail({
-        email: user.email,
-        name: user.name,
-        token: verificationRawToken
-      });
-    } catch (emailErr) {
+    // Dispatch verification email via Gmail / Email service asynchronously
+    sendVerificationEmail({
+      email: user.email,
+      name: user.name,
+      token: verificationRawToken
+    }).catch(emailErr => {
       console.error('Failed to send verification email on registration:', emailErr.message);
-    }
+    });
 
     const token = generateToken(user._id);
 
@@ -128,15 +126,13 @@ const verifyEmail = async (req, res, next) => {
     user.verificationTokenExpire = undefined;
     await user.save();
 
-    // Send Welcome Email upon successful verification!
-    try {
-      await sendWelcomeEmail({
-        email: user.email,
-        name: user.name
-      });
-    } catch (welcomeErr) {
+    // Dispatch Welcome Email upon successful verification asynchronously
+    sendWelcomeEmail({
+      email: user.email,
+      name: user.name
+    }).catch(welcomeErr => {
       console.error('Failed to send welcome email:', welcomeErr.message);
-    }
+    });
 
     const token = generateToken(user._id);
 
@@ -191,10 +187,12 @@ const resendVerification = async (req, res, next) => {
     user.verificationTokenExpire = Date.now() + 24 * 60 * 60 * 1000;
     await user.save();
 
-    await sendVerificationEmail({
+    sendVerificationEmail({
       email: user.email,
       name: user.name,
       token: verificationRawToken
+    }).catch(emailErr => {
+      console.error('Failed to send verification email:', emailErr.message);
     });
 
     res.json({
@@ -315,16 +313,14 @@ const forgotPassword = async (req, res, next) => {
     user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
     await user.save({ validateBeforeSave: false });
 
-    // Send reset password email via Gmail Nodemailer
-    try {
-      await sendPasswordResetEmail({
-        email: user.email,
-        name: user.name,
-        token: resetRawToken
-      });
-    } catch (emailErr) {
+    // Dispatch reset password email asynchronously
+    sendPasswordResetEmail({
+      email: user.email,
+      name: user.name,
+      token: resetRawToken
+    }).catch(emailErr => {
       console.error('Failed to send password reset email:', emailErr.message);
-    }
+    });
 
     res.json({
       success: true,
