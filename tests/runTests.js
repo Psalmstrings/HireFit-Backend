@@ -8,6 +8,7 @@ const runAllTests = async () => {
 
   let userToken = '';
   let adminToken = '';
+  let testUserId = '';
   let testCvId = '';
   let testJobId = '';
   let testAnalysisId = '';
@@ -35,7 +36,9 @@ const runAllTests = async () => {
     const regData = await regRes.json();
     assert.strictEqual(regData.success, true);
     assert.ok(regData.token, 'Should return JWT token');
+    assert.strictEqual(regData.user.isVerified, false, 'New user should have isVerified false');
     userToken = regData.token;
+    testUserId = regData.user.id;
     console.log(`   ✓ Registered user ${testEmail} with token.\n`);
 
     // 3. User Login
@@ -90,7 +93,6 @@ Responsibilities: Build enterprise web applications, lead UI architecture, mento
 
     // 6. CV Creation & Parsing
     console.log('6. Testing CV Upload & Structured Text Parsing...');
-    // Create a mock multipart form upload using FormData
     const sampleCvText = `Alex Johnson\nalex@example.com | +1 555 0199 | San Francisco\n\nFull Stack Engineer with 4 years experience in React, Node.js, JavaScript, REST APIs, and PostgreSQL.\n\nWork Experience:\nSenior Developer at WebCorp (2021-Present)\n- Built responsive React dashboards for 100k users.\n- Integrated RESTful APIs with Node.js backend.`;
 
     const blob = new Blob([sampleCvText], { type: 'text/plain' });
@@ -185,15 +187,90 @@ Responsibilities: Build enterprise web applications, lead UI architecture, mento
 
     // 11. Role-based Admin Protection Test
     console.log('11. Testing Role-based Access Control (User blocked from Admin)...');
-    const adminRes = await fetch(`${baseURL}/admin/stats`, {
+    const forbiddenRes = await fetch(`${baseURL}/admin/stats`, {
       headers: { Authorization: `Bearer ${userToken}` }
     });
-    assert.strictEqual(adminRes.status, 403, 'Regular user should get 403 Forbidden on admin endpoint');
+    assert.strictEqual(forbiddenRes.status, 403, 'Regular user should get 403 Forbidden on admin endpoint');
     console.log('   ✓ Non-admin correctly rejected with HTTP 403.\n');
 
-    console.log('====================================================');
-    console.log('🎉 ALL 11 CRITICAL INTEGRATION TESTS PASSED 100%!');
-    console.log('====================================================\n');
+    // 12. Admin Login with new credentials
+    console.log('12. Testing New Admin Login (psalmtringsdigital@gmail.com / psalmtringsdigital@gmail.com)...');
+    const adminLoginRes = await fetch(`${baseURL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'psalmtringsdigital@gmail.com',
+        password: 'psalmtringsdigital@gmail.com'
+      })
+    });
+    const adminLoginData = await adminLoginRes.json();
+    assert.strictEqual(adminLoginData.success, true, 'Admin login should succeed');
+    assert.strictEqual(adminLoginData.user.role, 'admin', 'Admin user must have admin role');
+    assert.ok(adminLoginData.token, 'Admin should receive token');
+    adminToken = adminLoginData.token;
+    console.log('   ✓ Production Admin logged in successfully.\n');
+
+    // 13. Admin Dashboard Statistics & Telemetry
+    console.log('13. Testing Admin Telemetry Stats (/admin/stats)...');
+    const adminStatsRes = await fetch(`${baseURL}/admin/stats`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const adminStatsData = await adminStatsRes.json();
+    assert.strictEqual(adminStatsData.success, true);
+    assert.ok(adminStatsData.stats.totalUsers >= 1);
+    assert.ok(adminStatsData.stats.totalCVs >= 1);
+    assert.ok(adminStatsData.stats.totalJobs >= 1);
+    assert.ok(adminStatsData.stats.totalAnalyses >= 1);
+    console.log(`   ✓ Admin Telemetry retrieved! Total Users: ${adminStatsData.stats.totalUsers}, CVs: ${adminStatsData.stats.totalCVs}, AI Invocations: ${adminStatsData.stats.totalAiInvocations}\n`);
+
+    // 14. Admin User Directory & Per-User Usage Aggregation
+    console.log('14. Testing Admin User Directory & Usage Monitoring (/admin/users)...');
+    const adminUsersRes = await fetch(`${baseURL}/admin/users`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const adminUsersData = await adminUsersRes.json();
+    assert.strictEqual(adminUsersData.success, true);
+    assert.ok(Array.isArray(adminUsersData.users));
+    const foundTestUser = adminUsersData.users.find(u => u._id === testUserId);
+    assert.ok(foundTestUser, 'User directory must include created test user');
+    assert.ok(foundTestUser.cvCount >= 1, 'Aggregated cvCount must be >= 1');
+    assert.ok(foundTestUser.analysisCount >= 1, 'Aggregated analysisCount must be >= 1');
+    console.log(`   ✓ Admin User Tracking verified! User: ${foundTestUser.email}, CVs: ${foundTestUser.cvCount}, Analyses: ${foundTestUser.analysisCount}\n`);
+
+    // 15. Admin User Activity Drilldown & Export
+    console.log('15. Testing Admin User Activity Drill-Down & Export (/admin/users/:id/activity)...');
+    const activityRes = await fetch(`${baseURL}/admin/users/${testUserId}/activity`, {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const activityData = await activityRes.json();
+    assert.strictEqual(activityData.success, true);
+    assert.strictEqual(activityData.user._id, testUserId);
+    assert.ok(activityData.activity.cvs.length >= 1);
+    assert.ok(activityData.activity.jobs.length >= 1);
+    console.log(`   ✓ User activity drill-down verified (${activityData.activity.cvs.length} CVs, ${activityData.activity.jobs.length} jobs).\n`);
+
+    // 16. Nodemailer Auth Endpoints (Resend Verification & Forgot Password)
+    console.log('16. Testing Nodemailer Auth Endpoints (Resend Verification & Forgot Password)...');
+    const resendRes = await fetch(`${baseURL}/auth/resend-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: testEmail })
+    });
+    const resendData = await resendRes.json();
+    assert.strictEqual(resendData.success, true);
+
+    const forgotRes = await fetch(`${baseURL}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: testEmail })
+    });
+    const forgotData = await forgotRes.json();
+    assert.strictEqual(forgotData.success, true);
+    console.log('   ✓ Email verification and password reset workflows tested cleanly.\n');
+
+    console.log('========================================================================');
+    console.log('🎉 ALL 16 INTEGRATION & TELEMETRY TESTS PASSED 100% PERFECTLY!');
+    console.log('========================================================================\n');
     process.exit(0);
   } catch (error) {
     console.error('❌ Test failed:', error);

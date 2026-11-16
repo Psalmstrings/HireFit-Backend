@@ -1,6 +1,11 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
+const {
+  sendVerificationEmail,
+  sendWelcomeEmail,
+  sendPasswordResetEmail
+} = require('../services/email/emailService');
 
 const generateToken = (id) => {
   return jwt.sign(
@@ -14,7 +19,7 @@ const generateToken = (id) => {
 // @route POST /api/auth/register
 const register = async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -32,7 +37,8 @@ const register = async (req, res, next) => {
       });
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -41,29 +47,159 @@ const register = async (req, res, next) => {
       });
     }
 
-    // Role check: Only allow admin creation if explicitly specified in development or first user
-    const userCount = await User.countDocuments();
-    const assignedRole = role === 'admin' || userCount === 0 ? (role === 'admin' ? 'admin' : 'user') : 'user';
+    // Generate email verification token (unhashed stored or hashed)
+    const verificationRawToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenHash = crypto.createHash('sha256').update(verificationRawToken).digest('hex');
+    const verificationTokenExpire = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
 
     const user = await User.create({
-      name,
-      email: email.toLowerCase(),
+      name: name.trim(),
+      email: normalizedEmail,
       password,
-      role: assignedRole
+      role: 'user',
+      isVerified: false,
+      verificationToken: verificationTokenHash,
+      verificationTokenExpire,
+      lastLogin: new Date()
     });
+
+    // Send verification email via Gmail Nodemailer
+    try {
+      await sendVerificationEmail({
+        email: user.email,
+        name: user.name,
+        token: verificationRawToken
+      });
+    } catch (emailErr) {
+      console.error('Failed to send verification email on registration:', emailErr.message);
+    }
 
     const token = generateToken(user._id);
 
     res.status(201).json({
       success: true,
-      message: 'Account registered successfully.',
+      message: 'Account registered successfully! A verification email has been sent to your inbox.',
       token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        isVerified: user.isVerified
       }
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc Verify email address
+// @route POST /api/auth/verify-email
+// @route GET /api/auth/verify-email
+const verifyEmail = async (req, res, next) => {
+  try {
+    const rawToken = req.query.token || req.body.token;
+
+    if (!rawToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification token is required.',
+        code: 'MISSING_TOKEN'
+      });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const user = await User.findOne({
+      verificationToken: hashedToken,
+      verificationTokenExpire: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification link is invalid or has expired. Please request a new one.',
+        code: 'INVALID_OR_EXPIRED_TOKEN'
+      });
+    }
+
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpire = undefined;
+    await user.save();
+
+    // Send Welcome Email upon successful verification!
+    try {
+      await sendWelcomeEmail({
+        email: user.email,
+        name: user.name
+      });
+    } catch (welcomeErr) {
+      console.error('Failed to send welcome email:', welcomeErr.message);
+    }
+
+    const token = generateToken(user._id);
+
+    res.json({
+      success: true,
+      message: 'Email successfully verified! Welcome to HireFit.',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isVerified: true
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc Resend verification email
+// @route POST /api/auth/resend-verification
+const resendVerification = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide your email address.',
+        code: 'MISSING_EMAIL'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      return res.json({
+        success: true,
+        message: 'If that email address is registered, a new verification link has been sent.'
+      });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'This account has already been verified.',
+        code: 'ALREADY_VERIFIED'
+      });
+    }
+
+    const verificationRawToken = crypto.randomBytes(32).toString('hex');
+    user.verificationToken = crypto.createHash('sha256').update(verificationRawToken).digest('hex');
+    user.verificationTokenExpire = Date.now() + 24 * 60 * 60 * 1000;
+    await user.save();
+
+    await sendVerificationEmail({
+      email: user.email,
+      name: user.name,
+      token: verificationRawToken
+    });
+
+    res.json({
+      success: true,
+      message: 'A fresh verification email has been sent to your inbox.'
     });
   } catch (err) {
     next(err);
@@ -84,7 +220,7 @@ const login = async (req, res, next) => {
       });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase().trim() }).select('+password');
 
     if (!user) {
       return res.status(401).json({
@@ -103,6 +239,9 @@ const login = async (req, res, next) => {
       });
     }
 
+    user.lastLogin = new Date();
+    await user.save({ validateBeforeSave: false });
+
     const token = generateToken(user._id);
 
     res.json({
@@ -113,7 +252,8 @@ const login = async (req, res, next) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        isVerified: Boolean(user.isVerified)
       }
     });
   } catch (err) {
@@ -122,10 +262,13 @@ const login = async (req, res, next) => {
 };
 
 // @desc Get current authenticated user
-// @route GET /api/users/me
+// @route GET /api/users/me or GET /api/auth/me
 const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
     res.json({
       success: true,
       user: {
@@ -133,8 +276,10 @@ const getMe = async (req, res, next) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        aiUsageCount: user.aiUsageCount,
-        createdAt: user.createdAt
+        isVerified: Boolean(user.isVerified),
+        aiUsageCount: user.aiUsageCount || 0,
+        createdAt: user.createdAt,
+        lastLogin: user.lastLogin
       }
     });
   } catch (err) {
@@ -147,25 +292,43 @@ const getMe = async (req, res, next) => {
 const forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email: email?.toLowerCase() });
-
-    if (!user) {
-      // Return 200 to prevent email enumeration
-      return res.json({
-        success: true,
-        message: 'If that email is registered, password reset instructions have been generated.'
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide your email address.',
+        code: 'MISSING_EMAIL'
       });
     }
 
-    const resetToken = crypto.randomBytes(20).toString('hex');
-    user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
-    await user.save();
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    if (!user) {
+      // Return 200 generic message to prevent email enumeration
+      return res.json({
+        success: true,
+        message: 'If that email address is registered, password reset instructions have been sent.'
+      });
+    }
+
+    const resetRawToken = crypto.randomBytes(32).toString('hex');
+    user.resetPasswordToken = crypto.createHash('sha256').update(resetRawToken).digest('hex');
+    user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
+    await user.save({ validateBeforeSave: false });
+
+    // Send reset password email via Gmail Nodemailer
+    try {
+      await sendPasswordResetEmail({
+        email: user.email,
+        name: user.name,
+        token: resetRawToken
+      });
+    } catch (emailErr) {
+      console.error('Failed to send password reset email:', emailErr.message);
+    }
 
     res.json({
       success: true,
-      message: 'Password reset token generated.',
-      resetToken // Returned in development for immediate UX testability
+      message: 'Password reset link has been sent to your email.'
     });
   } catch (err) {
     next(err);
@@ -210,8 +373,15 @@ const resetPassword = async (req, res, next) => {
 
     res.json({
       success: true,
-      message: 'Password reset successfully. You are now logged in.',
-      token: jwtToken
+      message: 'Password reset successfully! You are now logged in.',
+      token: jwtToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isVerified: Boolean(user.isVerified)
+      }
     });
   } catch (err) {
     next(err);
@@ -220,6 +390,8 @@ const resetPassword = async (req, res, next) => {
 
 module.exports = {
   register,
+  verifyEmail,
+  resendVerification,
   login,
   getMe,
   forgotPassword,
