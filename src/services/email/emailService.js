@@ -173,6 +173,33 @@ const wrapHtmlEmail = ({ title, preheader, content, actionBtn, footerText }) => 
 };
 
 /**
+ * 0. Free Gmail Webhook Relay (100% Free, sends 500 emails/day directly from your Gmail, 0 domain needed)
+ */
+const sendViaWebhook = async ({ to, subject, html, text }) => {
+  const url = process.env.GMAIL_WEBHOOK_URL || process.env.EMAIL_WEBHOOK_URL;
+  if (!url) return null;
+
+  try {
+    const res = await fetch(url.trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, html, text })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success) {
+      console.log(`📧 [EMAIL SENT via Free Gmail Webhook] to ${to}`);
+      return { success: true, provider: 'gmail-webhook', to };
+    }
+    console.warn('⚠️ [Gmail Webhook Error]:', data);
+    return { success: false, provider: 'gmail-webhook', error: data.error || 'Webhook delivery failed' };
+  } catch (err) {
+    console.error('❌ [Gmail Webhook Fetch Error]:', err.message);
+    return { success: false, provider: 'gmail-webhook', error: err.message };
+  }
+};
+
+/**
  * 1. Brevo (Sendinblue) HTTP API (HTTPS Port 443 — Free 300 emails/day, NO domain verification needed!)
  */
 const sendViaBrevo = async ({ to, subject, html, text }) => {
@@ -373,6 +400,12 @@ const sendViaSmtp = async ({ to, subject, html, text }) => {
  * Universal SendMail Function with Multi-Provider Support
  */
 const sendMail = async ({ to, subject, html, text }) => {
+  // 0. Try Free Gmail Webhook Relay (100% Free, sends from your Gmail directly to anyone, 0 domain needed)
+  const webhookResult = await sendViaWebhook({ to, subject, html, text });
+  if (webhookResult && webhookResult.success) {
+    return webhookResult;
+  }
+
   // 1. Try Brevo HTTP API (Port 443 — free 300 emails/day, sends to ANY recipient without domain verification!)
   const brevoResult = await sendViaBrevo({ to, subject, html, text });
   if (brevoResult && brevoResult.success) {
@@ -393,6 +426,7 @@ const sendMail = async ({ to, subject, html, text }) => {
 
   // If all failed:
   const finalError = [
+    webhookResult ? `Gmail Webhook: ${webhookResult.error}` : null,
     brevoResult ? `Brevo: ${brevoResult.error}` : null,
     resendResult ? `Resend: ${resendResult.error}` : null,
     smtpResult ? `SMTP: ${smtpResult.error}` : null
