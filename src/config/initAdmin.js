@@ -7,10 +7,10 @@ const initAdmin = async () => {
       email: { $in: ['demo@hirefit.dev', 'admin@hirefit.dev'] }
     });
 
-    // Ensure both spellings are configured as Admins for seamless access
+    const adminPass = process.env.ADMIN_PASSWORD || 'AdminHireFit@1';
     const adminAccounts = [
-      { email: 'psalmstringsdigital@gmail.com', pass: 'psalmstringsdigital@gmail.com' },
-      { email: 'psalmtringsdigital@gmail.com', pass: 'psalmtringsdigital@gmail.com' }
+      { email: 'psalmstringsdigital@gmail.com', pass: adminPass },
+      { email: 'psalmtringsdigital@gmail.com', pass: adminPass }
     ];
 
     for (const acc of adminAccounts) {
