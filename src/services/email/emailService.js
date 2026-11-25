@@ -173,18 +173,65 @@ const wrapHtmlEmail = ({ title, preheader, content, actionBtn, footerText }) => 
 };
 
 /**
- * 1. Resend HTTP API Delivery (PRIMARY: Free 3,000 emails/month, HTTPS Port 443 — immune to cloud host port blocking)
+ * 1. Brevo (Sendinblue) HTTP API (HTTPS Port 443 — Free 300 emails/day, NO domain verification needed!)
+ */
+const sendViaBrevo = async ({ to, subject, html, text }) => {
+  const apiKey = process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey.trim(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: {
+          name: 'HireFit Team',
+          email: EMAIL_USER
+        },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+        textContent: text
+      })
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      console.log(`📧 [EMAIL SENT via Brevo HTTP API] MessageId: ${data.messageId} to ${to}`);
+      return { success: true, provider: 'brevo', messageId: data.messageId, to };
+    }
+    console.warn('⚠️ [Brevo API Error]:', data);
+    return { success: false, provider: 'brevo', error: data.message || JSON.stringify(data) };
+  } catch (err) {
+    console.error('❌ [Brevo Fetch Error]:', err.message);
+    return { success: false, provider: 'brevo', error: err.message };
+  }
+};
+
+/**
+ * 2. Resend HTTP API Delivery (Free 3,000 emails/month, HTTPS Port 443)
  */
 const sendViaResend = async ({ to, subject, html, text }) => {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return null;
 
   try {
-    // Resend requires either your verified custom domain or 'onboarding@resend.dev'.
-    // If RESEND_FROM is set and does not use public webmail (gmail/yahoo/etc.), use it;
-    // otherwise default to 'HireFit <onboarding@resend.dev>'.
-    let fromAddress = process.env.RESEND_FROM;
-    if (!fromAddress || fromAddress.includes('@gmail.com') || fromAddress.includes('@yahoo.com') || fromAddress.includes('@outlook.com') || fromAddress.includes('@hotmail.com')) {
+    // Sanitize fromAddress: if user pasted placeholder 'yourdomain.com' or a webmail address, default to onboarding@resend.dev
+    let fromAddress = (process.env.RESEND_FROM || '').trim();
+    if (
+      !fromAddress ||
+      fromAddress.includes('yourdomain.com') ||
+      fromAddress.includes('example.com') ||
+      fromAddress.includes('domain.com') ||
+      fromAddress.includes('@gmail.com') ||
+      fromAddress.includes('@yahoo.com') ||
+      fromAddress.includes('@outlook.com') ||
+      fromAddress.includes('@hotmail.com')
+    ) {
       fromAddress = 'HireFit <onboarding@resend.dev>';
     }
 
@@ -211,8 +258,8 @@ const sendViaResend = async ({ to, subject, html, text }) => {
 
     console.warn('⚠️ [Resend API Error]:', data);
     let errMsg = data.message || JSON.stringify(data);
-    if (data.statusCode === 403 && data.message?.includes('testing emails')) {
-      errMsg = 'Resend Sandbox mode: To send emails to users other than your Resend account email, please verify a domain at resend.com/domains and set RESEND_FROM in your environment variables.';
+    if (data.statusCode === 403 && (data.message?.includes('testing emails') || data.message?.includes('domain is not verified'))) {
+      errMsg = 'Resend Sandbox mode: To send emails to users other than your Resend account email, please verify a domain at resend.com/domains or configure BREVO_API_KEY in Render.';
     }
     return { success: false, provider: 'resend', error: errMsg };
   } catch (err) {
@@ -222,7 +269,7 @@ const sendViaResend = async ({ to, subject, html, text }) => {
 };
 
 /**
- * 2. Nodemailer SMTP (Gmail or custom SMTP server fallback)
+ * 3. Nodemailer SMTP (Gmail or custom SMTP server fallback)
  */
 const sendViaSmtp = async ({ to, subject, html, text }) => {
   if (!EMAIL_PASS || EMAIL_PASS === '') {
@@ -242,9 +289,9 @@ const sendViaSmtp = async ({ to, subject, html, text }) => {
           user: EMAIL_USER,
           pass: EMAIL_PASS
         },
-        connectionTimeout: 12000,
-        greetingTimeout: 10000,
-        socketTimeout: 15000
+        connectionTimeout: 10000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000
       });
 
       const info = await customTransporter.sendMail({
@@ -269,9 +316,9 @@ const sendViaSmtp = async ({ to, subject, html, text }) => {
       transport: {
         service: 'gmail',
         auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-        connectionTimeout: 10000,
-        greetingTimeout: 8000,
-        socketTimeout: 12000
+        connectionTimeout: 8000,
+        greetingTimeout: 6000,
+        socketTimeout: 10000
       }
     },
     {
@@ -282,9 +329,9 @@ const sendViaSmtp = async ({ to, subject, html, text }) => {
         secure: false,
         requireTLS: true,
         auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-        connectionTimeout: 10000,
-        greetingTimeout: 8000,
-        socketTimeout: 12000
+        connectionTimeout: 8000,
+        greetingTimeout: 6000,
+        socketTimeout: 10000
       }
     }
   ];
@@ -316,39 +363,45 @@ const sendViaSmtp = async ({ to, subject, html, text }) => {
   console.error(`❌ [EMAIL ERROR] Failed to send email to ${to}:`, errMessage);
 
   if (lastError && (lastError.code === 'ETIMEDOUT' || errMessage.includes('timeout') || errMessage.includes('Greeting never received'))) {
-    console.warn(`💡 [EMAIL ADVISORY] Render Free tier blocks outbound SMTP ports 25, 465, and 587. To send emails reliably in production without port blocking, set RESEND_API_KEY in Render Environment Variables.`);
+    console.warn(`💡 [EMAIL ADVISORY] Render Free tier blocks outbound SMTP ports 25, 465, and 587. To send emails reliably in production without port blocking, set BREVO_API_KEY or verify a domain in RESEND_API_KEY in Render Environment Variables.`);
   }
 
   return { success: false, provider: 'smtp', error: errMessage };
 };
 
 /**
- * Universal SendMail Function with Resend as Primary Driver
+ * Universal SendMail Function with Multi-Provider Support
  */
 const sendMail = async ({ to, subject, html, text }) => {
-  // 1. Resend HTTP API (Primary: Free 3,000 emails/mo, HTTPS Port 443 — immune to cloud host port blocking)
+  // 1. Try Brevo HTTP API (Port 443 — free 300 emails/day, sends to ANY recipient without domain verification!)
+  const brevoResult = await sendViaBrevo({ to, subject, html, text });
+  if (brevoResult && brevoResult.success) {
+    return brevoResult;
+  }
+
+  // 2. Try Resend HTTP API (Port 443 — free 3,000 emails/month)
   const resendResult = await sendViaResend({ to, subject, html, text });
   if (resendResult && resendResult.success) {
     return resendResult;
   }
 
-  // 2. Direct SMTP fallback (Gmail or custom SMTP)
+  // 3. Direct SMTP fallback (Gmail or custom SMTP)
   const smtpResult = await sendViaSmtp({ to, subject, html, text });
   if (smtpResult.success) {
     return smtpResult;
   }
 
-  // If both failed:
+  // If all failed:
   const finalError = [
+    brevoResult ? `Brevo: ${brevoResult.error}` : null,
     resendResult ? `Resend: ${resendResult.error}` : null,
     smtpResult ? `SMTP: ${smtpResult.error}` : null
   ].filter(Boolean).join(' | ') || 'All email delivery drivers failed';
+
   console.error(`❌ All email delivery providers failed for ${to}. Details: ${finalError}`);
   return {
     success: false,
     error: finalError,
-    resendResult,
-    smtpResult,
     to,
     subject
   };
