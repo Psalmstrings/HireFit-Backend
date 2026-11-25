@@ -180,7 +180,14 @@ const sendViaResend = async ({ to, subject, html, text }) => {
   if (!apiKey) return null;
 
   try {
-    const fromAddress = process.env.RESEND_FROM || process.env.EMAIL_FROM || 'HireFit <onboarding@resend.dev>';
+    // Resend requires either your verified custom domain or 'onboarding@resend.dev'.
+    // If RESEND_FROM is set and does not use public webmail (gmail/yahoo/etc.), use it;
+    // otherwise default to 'HireFit <onboarding@resend.dev>'.
+    let fromAddress = process.env.RESEND_FROM;
+    if (!fromAddress || fromAddress.includes('@gmail.com') || fromAddress.includes('@yahoo.com') || fromAddress.includes('@outlook.com') || fromAddress.includes('@hotmail.com')) {
+      fromAddress = 'HireFit <onboarding@resend.dev>';
+    }
+
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -332,11 +339,16 @@ const sendMail = async ({ to, subject, html, text }) => {
   }
 
   // If both failed:
-  const finalError = resendResult?.error || smtpResult?.error || 'All email delivery drivers failed';
-  console.error(`❌ All email delivery providers failed for ${to}. Error: ${finalError}`);
+  const finalError = [
+    resendResult ? `Resend: ${resendResult.error}` : null,
+    smtpResult ? `SMTP: ${smtpResult.error}` : null
+  ].filter(Boolean).join(' | ') || 'All email delivery drivers failed';
+  console.error(`❌ All email delivery providers failed for ${to}. Details: ${finalError}`);
   return {
     success: false,
     error: finalError,
+    resendResult,
+    smtpResult,
     to,
     subject
   };
