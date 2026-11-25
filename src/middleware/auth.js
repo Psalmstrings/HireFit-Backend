@@ -20,7 +20,10 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'hirefit_super_secret_jwt_key_2026_production_grade_token');
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || 'hirefit_super_secret_jwt_key_2026_production_grade_token'
+    );
     const user = await User.findById(decoded.id).select('-password');
 
     if (!user) {
@@ -28,6 +31,15 @@ const protect = async (req, res, next) => {
         success: false,
         message: 'The user belonging to this token no longer exists.',
         code: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Block unverified users from accessing protected endpoints
+    if (!user.isVerified && user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email address to access your account.',
+        code: 'UNVERIFIED_EMAIL'
       });
     }
 

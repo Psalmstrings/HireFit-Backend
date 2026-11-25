@@ -1,31 +1,33 @@
 const nodemailer = require('nodemailer');
 
-const EMAIL_USER = (process.env.EMAIL_USER || process.env.GMAIL_USER || 'psalmstringsdigital@gmail.com').trim();
-const rawPass = process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASSWORD || '';
-const EMAIL_PASS = rawPass.trim().replace(/\s+/g, '');
+const EMAIL_USER = (
+  process.env.EMAIL_USER ||
+  process.env.GMAIL_USER ||
+  process.env.SMTP_USER ||
+  'psalmstringsdigital@gmail.com'
+).trim();
+
+const rawPass = (
+  process.env.EMAIL_PASS ||
+  process.env.GMAIL_APP_PASSWORD ||
+  process.env.EMAIL_PASSWORD ||
+  process.env.SMTP_PASS ||
+  'mxzs ogwv prrm fxpt'
+).trim();
+
+const EMAIL_PASS = rawPass.replace(/\s+/g, '');
 const EMAIL_FROM = process.env.EMAIL_FROM || `"HireFit Team" <${EMAIL_USER}>`;
-const CLIENT_URL = (process.env.CLIENT_URL || (process.env.NODE_ENV === 'production' ? 'https://hire-fitt.vercel.app' : 'http://localhost:5173')).replace(/\/$/, '');
 
-let transporter = null;
+const DEFAULT_CLIENT_URL = (
+  process.env.CLIENT_URL ||
+  (process.env.NODE_ENV === 'production' ? 'https://hire-fitt.vercel.app' : 'http://localhost:5173')
+).replace(/\/$/, '');
 
-const getTransporter = () => {
-  if (!transporter) {
-    if (EMAIL_PASS && EMAIL_PASS.trim() !== '') {
-      transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: EMAIL_USER,
-          pass: EMAIL_PASS
-        },
-        connectionTimeout: 5000,
-        greetingTimeout: 5000,
-        socketTimeout: 8000
-      });
-    } else {
-      transporter = null;
-    }
+const resolveClientUrl = (reqOrigin) => {
+  if (reqOrigin && typeof reqOrigin === 'string' && (reqOrigin.startsWith('http://') || reqOrigin.startsWith('https://'))) {
+    return reqOrigin.replace(/\/$/, '');
   }
-  return transporter;
+  return DEFAULT_CLIENT_URL;
 };
 
 // Base HTML Template wrapper using HireFit Official Brand Colors
@@ -171,72 +173,181 @@ const wrapHtmlEmail = ({ title, preheader, content, actionBtn, footerText }) => 
 };
 
 /**
- * Send an email using Nodemailer Gmail transport or simulated logger
+ * 1. Resend HTTP API Delivery (PRIMARY: Free 3,000 emails/month, HTTPS Port 443 — immune to cloud host port blocking)
  */
-const sendMail = async ({ to, subject, html, text }) => {
-  // 1. If Resend API Key is set, deliver via HTTPS port 443 (immune to cloud host SMTP port blocks)
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          from: process.env.EMAIL_FROM || `HireFit Team <onboarding@resend.dev>`,
-          to: [to],
-          subject,
-          html,
-          text
-        })
-      });
-      const data = await response.json();
-      if (response.ok) {
-        console.log(`📧 [EMAIL SENT via Resend HTTP API] Id: ${data.id} to ${to}`);
-        return { success: true, messageId: data.id, to };
-      }
-      console.warn(`⚠️ [Resend API Error]:`, data);
-    } catch (apiErr) {
-      console.error(`❌ [Resend Fetch Error]:`, apiErr.message);
-    }
-  }
-
-  // 2. Gmail Nodemailer SMTP
-  const mailTransporter = getTransporter();
-
-  if (!mailTransporter) {
-    console.log(`\n📧 [EMAIL SIMULATION — Configure EMAIL_PASS for live Gmail SMTP or RESEND_API_KEY for HTTP API]`);
-    console.log(`   To: ${to}`);
-    console.log(`   Subject: ${subject}`);
-    console.log(`   From: ${EMAIL_FROM}`);
-    return { success: true, simulated: true, to, subject };
-  }
+const sendViaResend = async ({ to, subject, html, text }) => {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return null;
 
   try {
-    const info = await mailTransporter.sendMail({
-      from: EMAIL_FROM,
-      to,
-      subject,
-      text,
-      html
+    const fromAddress = process.env.RESEND_FROM || process.env.EMAIL_FROM || 'HireFit <onboarding@resend.dev>';
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey.trim()}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: fromAddress,
+        to: Array.isArray(to) ? to : [to],
+        subject,
+        html,
+        text
+      })
     });
-    console.log(`📧 [EMAIL SENT] MessageId: ${info.messageId} to ${to}`);
-    return { success: true, messageId: info.messageId, to };
-  } catch (error) {
-    console.error(`❌ [EMAIL ERROR] Failed to send email to ${to}:`, error.message);
-    if (error.code === 'ETIMEDOUT' || error.message?.includes('timeout') || error.message?.includes('Greeting never received')) {
-      console.warn(`💡 [EMAIL ADVISORY] Render Free tier blocks outbound SMTP ports 465/587. To send emails directly from Render without port blocking, either set RESEND_API_KEY in Render Environment Variables or upgrade from Free to Starter on Render.`);
+
+    const data = await res.json();
+    if (res.ok) {
+      console.log(`📧 [EMAIL SENT via Resend HTTP API] Id: ${data.id} to ${to}`);
+      return { success: true, provider: 'resend', messageId: data.id, to };
     }
-    return { success: false, error: error.message };
+
+    console.warn('⚠️ [Resend API Error]:', data);
+    let errMsg = data.message || JSON.stringify(data);
+    if (data.statusCode === 403 && data.message?.includes('testing emails')) {
+      errMsg = 'Resend Sandbox mode: To send emails to users other than your Resend account email, please verify a domain at resend.com/domains and set RESEND_FROM in your environment variables.';
+    }
+    return { success: false, provider: 'resend', error: errMsg };
+  } catch (err) {
+    console.error('❌ [Resend Fetch Error]:', err.message);
+    return { success: false, provider: 'resend', error: err.message };
   }
+};
+
+/**
+ * 2. Nodemailer SMTP (Gmail or custom SMTP server fallback)
+ */
+const sendViaSmtp = async ({ to, subject, html, text }) => {
+  if (!EMAIL_PASS || EMAIL_PASS === '') {
+    return { success: false, provider: 'smtp', error: 'No SMTP password or API key configured' };
+  }
+
+  // A. Custom SMTP server if host specified
+  if (process.env.SMTP_HOST) {
+    const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 587;
+    const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+    try {
+      const customTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port,
+        secure,
+        auth: {
+          user: EMAIL_USER,
+          pass: EMAIL_PASS
+        },
+        connectionTimeout: 12000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000
+      });
+
+      const info = await customTransporter.sendMail({
+        from: EMAIL_FROM,
+        to,
+        subject,
+        text,
+        html
+      });
+      console.log(`📧 [EMAIL SENT via Custom SMTP] MessageId: ${info.messageId} to ${to}`);
+      return { success: true, provider: 'smtp-custom', messageId: info.messageId, to };
+    } catch (err) {
+      console.error('❌ [Custom SMTP Error]:', err.message);
+      return { success: false, provider: 'smtp-custom', error: err.message };
+    }
+  }
+
+  // B. Gmail SMTP (Try SSL port 465 first; if timeout/blocked, attempt TLS port 587)
+  const configs = [
+    {
+      name: 'Gmail SSL (465)',
+      transport: {
+        service: 'gmail',
+        auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+        connectionTimeout: 10000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000
+      }
+    },
+    {
+      name: 'Gmail TLS (587)',
+      transport: {
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        requireTLS: true,
+        auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+        connectionTimeout: 10000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000
+      }
+    }
+  ];
+
+  let lastError = null;
+
+  for (const cfg of configs) {
+    try {
+      const transporter = nodemailer.createTransport(cfg.transport);
+      const info = await transporter.sendMail({
+        from: EMAIL_FROM,
+        to,
+        subject,
+        text,
+        html
+      });
+      console.log(`📧 [EMAIL SENT via ${cfg.name}] MessageId: ${info.messageId} to ${to}`);
+      return { success: true, provider: cfg.name, messageId: info.messageId, to };
+    } catch (err) {
+      lastError = err;
+      console.warn(`⚠️ [${cfg.name}] Failed: ${err.message}`);
+      if (err.message && (err.message.includes('BadCredentials') || err.message.includes('Username and Password not accepted'))) {
+        break;
+      }
+    }
+  }
+
+  const errMessage = lastError ? lastError.message : 'SMTP dispatch failed';
+  console.error(`❌ [EMAIL ERROR] Failed to send email to ${to}:`, errMessage);
+
+  if (lastError && (lastError.code === 'ETIMEDOUT' || errMessage.includes('timeout') || errMessage.includes('Greeting never received'))) {
+    console.warn(`💡 [EMAIL ADVISORY] Render Free tier blocks outbound SMTP ports 25, 465, and 587. To send emails reliably in production without port blocking, set RESEND_API_KEY in Render Environment Variables.`);
+  }
+
+  return { success: false, provider: 'smtp', error: errMessage };
+};
+
+/**
+ * Universal SendMail Function with Resend as Primary Driver
+ */
+const sendMail = async ({ to, subject, html, text }) => {
+  // 1. Resend HTTP API (Primary: Free 3,000 emails/mo, HTTPS Port 443 — immune to cloud host port blocking)
+  const resendResult = await sendViaResend({ to, subject, html, text });
+  if (resendResult && resendResult.success) {
+    return resendResult;
+  }
+
+  // 2. Direct SMTP fallback (Gmail or custom SMTP)
+  const smtpResult = await sendViaSmtp({ to, subject, html, text });
+  if (smtpResult.success) {
+    return smtpResult;
+  }
+
+  // If both failed:
+  const finalError = resendResult?.error || smtpResult?.error || 'All email delivery drivers failed';
+  console.error(`❌ All email delivery providers failed for ${to}. Error: ${finalError}`);
+  return {
+    success: false,
+    error: finalError,
+    to,
+    subject
+  };
 };
 
 /**
  * 1. Verification Email after user registration
  */
-const sendVerificationEmail = async ({ email, name, token }) => {
-  const verifyUrl = `${CLIENT_URL}/verify-email?token=${token}`;
+const sendVerificationEmail = async ({ email, name, token, clientUrl }) => {
+  const baseUrl = resolveClientUrl(clientUrl);
+  const verifyUrl = `${baseUrl}/verify-email?token=${token}`;
   const subject = 'Verify your HireFit Account';
   const preheader = 'Please confirm your email address to activate your HireFit account.';
 
@@ -268,8 +379,9 @@ const sendVerificationEmail = async ({ email, name, token }) => {
 /**
  * 2. Welcome Email sent when a user successfully verifies their account
  */
-const sendWelcomeEmail = async ({ email, name }) => {
-  const dashboardUrl = `${CLIENT_URL}/dashboard`;
+const sendWelcomeEmail = async ({ email, name, clientUrl }) => {
+  const baseUrl = resolveClientUrl(clientUrl);
+  const dashboardUrl = `${baseUrl}/dashboard`;
   const subject = 'Welcome to HireFit! 🎉 Your account is verified';
   const preheader = 'Your HireFit account is now verified and ready to optimize your job applications.';
 
@@ -308,8 +420,9 @@ const sendWelcomeEmail = async ({ email, name }) => {
 /**
  * 3. Password Reset Email
  */
-const sendPasswordResetEmail = async ({ email, name, token }) => {
-  const resetUrl = `${CLIENT_URL}/reset-password?token=${token}`;
+const sendPasswordResetEmail = async ({ email, name, token, clientUrl }) => {
+  const baseUrl = resolveClientUrl(clientUrl);
+  const resetUrl = `${baseUrl}/reset-password?token=${token}`;
   const subject = 'Reset your HireFit Password';
   const preheader = 'Instructions to reset your HireFit password.';
 

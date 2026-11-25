@@ -4,7 +4,8 @@ const User = require('../models/User');
 const {
   sendVerificationEmail,
   sendWelcomeEmail,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  sendMail
 } = require('../services/email/emailService');
 
 const generateToken = (id) => {
@@ -47,7 +48,7 @@ const register = async (req, res, next) => {
       });
     }
 
-    // Generate email verification token (unhashed stored or hashed)
+    // Generate email verification token (unhashed sent in email, hashed stored in DB)
     const verificationRawToken = crypto.randomBytes(32).toString('hex');
     const verificationTokenHash = crypto.createHash('sha256').update(verificationRawToken).digest('hex');
     const verificationTokenExpire = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
@@ -63,27 +64,29 @@ const register = async (req, res, next) => {
       lastLogin: new Date()
     });
 
-    // Dispatch verification email via Gmail / Email service asynchronously
-    sendVerificationEmail({
+    // Dispatch verification email via live email provider
+    const emailResult = await sendVerificationEmail({
       email: user.email,
       name: user.name,
-      token: verificationRawToken
-    }).catch(emailErr => {
-      console.error('Failed to send verification email on registration:', emailErr.message);
+      token: verificationRawToken,
+      clientUrl: req.headers.origin
     });
 
-    const token = generateToken(user._id);
-
+    // DO NOT return a JWT token: users MUST verify email before gaining access
     res.status(201).json({
       success: true,
-      message: 'Account registered successfully! A verification email has been sent to your inbox.',
-      token,
+      message: emailResult.success
+        ? 'Account registered successfully! A confirmation link has been sent to your email. Please check your inbox and verify your email to log in.'
+        : 'Account created! However, we experienced a delay delivering the confirmation email. Please click "Resend Verification Email" or check your inbox shortly.',
+      requireVerification: true,
+      emailSent: Boolean(emailResult.success),
+      emailError: emailResult.success ? undefined : emailResult.error,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
-        isVerified: user.isVerified
+        isVerified: false
       }
     });
   } catch (err) {
@@ -126,14 +129,16 @@ const verifyEmail = async (req, res, next) => {
     user.verificationTokenExpire = undefined;
     await user.save();
 
-    // Dispatch Welcome Email upon successful verification asynchronously
+    // Dispatch Welcome Email asynchronously
     sendWelcomeEmail({
       email: user.email,
-      name: user.name
+      name: user.name,
+      clientUrl: req.headers.origin
     }).catch(welcomeErr => {
       console.error('Failed to send welcome email:', welcomeErr.message);
     });
 
+    // Once email is successfully verified, issue token for immediate login
     const token = generateToken(user._id);
 
     res.json({
@@ -177,7 +182,7 @@ const resendVerification = async (req, res, next) => {
     if (user.isVerified) {
       return res.status(400).json({
         success: false,
-        message: 'This account has already been verified.',
+        message: 'This account has already been verified. You can log in directly.',
         code: 'ALREADY_VERIFIED'
       });
     }
@@ -187,17 +192,24 @@ const resendVerification = async (req, res, next) => {
     user.verificationTokenExpire = Date.now() + 24 * 60 * 60 * 1000;
     await user.save();
 
-    sendVerificationEmail({
+    const emailResult = await sendVerificationEmail({
       email: user.email,
       name: user.name,
-      token: verificationRawToken
-    }).catch(emailErr => {
-      console.error('Failed to send verification email:', emailErr.message);
+      token: verificationRawToken,
+      clientUrl: req.headers.origin
     });
+
+    if (!emailResult.success) {
+      return res.status(502).json({
+        success: false,
+        message: `Failed to deliver verification email: ${emailResult.error || 'Email delivery failed'}. Please check your SMTP/Email settings.`,
+        code: 'EMAIL_SEND_FAILED'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'A fresh verification email has been sent to your inbox.'
+      message: 'A fresh verification email has been sent to your inbox. Please check your spam folder if you do not see it.'
     });
   } catch (err) {
     next(err);
@@ -234,6 +246,16 @@ const login = async (req, res, next) => {
         success: false,
         message: 'Invalid email or password.',
         code: 'INVALID_CREDENTIALS'
+      });
+    }
+
+    // REQUIREMENT: Users should not be able to access login until email has been confirmed
+    if (!user.isVerified && user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email address before logging in. Check your inbox for the confirmation link.',
+        code: 'UNVERIFIED_EMAIL',
+        email: user.email
       });
     }
 
@@ -313,14 +335,20 @@ const forgotPassword = async (req, res, next) => {
     user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
     await user.save({ validateBeforeSave: false });
 
-    // Dispatch reset password email asynchronously
-    sendPasswordResetEmail({
+    const emailResult = await sendPasswordResetEmail({
       email: user.email,
       name: user.name,
-      token: resetRawToken
-    }).catch(emailErr => {
-      console.error('Failed to send password reset email:', emailErr.message);
+      token: resetRawToken,
+      clientUrl: req.headers.origin
     });
+
+    if (!emailResult.success) {
+      return res.status(502).json({
+        success: false,
+        message: `Failed to send password reset email: ${emailResult.error || 'Mail delivery error'}. Please try again later.`,
+        code: 'EMAIL_SEND_FAILED'
+      });
+    }
 
     res.json({
       success: true,
@@ -363,6 +391,10 @@ const resetPassword = async (req, res, next) => {
     user.password = newPassword;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
+    // Successfully resetting password via authenticated email link confirms ownership!
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpire = undefined;
     await user.save();
 
     const jwtToken = generateToken(user._id);
@@ -376,11 +408,38 @@ const resetPassword = async (req, res, next) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        isVerified: Boolean(user.isVerified)
+        isVerified: true
       }
     });
   } catch (err) {
     next(err);
+  }
+};
+
+// @desc Diagnostic endpoint to test live email delivery in production
+// @route POST /api/auth/diagnostic/test-email
+const testEmailDiagnostic = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const targetEmail = email || process.env.EMAIL_USER || 'psalmstringsdigital@gmail.com';
+
+    const result = await sendMail({
+      to: targetEmail,
+      subject: 'HireFit Email Diagnostics Test',
+      html: '<p>This is a diagnostic test email from the HireFit API.</p>',
+      text: 'This is a diagnostic test email from the HireFit API.'
+    });
+
+    res.json({
+      success: result.success,
+      result,
+      targetEmail
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 };
 
@@ -391,5 +450,6 @@ module.exports = {
   login,
   getMe,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  testEmailDiagnostic
 };

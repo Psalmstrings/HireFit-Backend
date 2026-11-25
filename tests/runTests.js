@@ -35,14 +35,33 @@ const runAllTests = async () => {
     });
     const regData = await regRes.json();
     assert.strictEqual(regData.success, true);
-    assert.ok(regData.token, 'Should return JWT token');
     assert.strictEqual(regData.user.isVerified, false, 'New user should have isVerified false');
-    userToken = regData.token;
+    assert.strictEqual(regData.requireVerification, true, 'Registration must require email verification');
     testUserId = regData.user.id;
-    console.log(`   ✓ Registered user ${testEmail} with token.\n`);
+    console.log(`   ✓ Registered user ${testEmail} (unverified, verification required).\n`);
+
+    // 2b. Verify that unverified user CANNOT login
+    console.log('2b. Testing Login Restriction for Unverified User...');
+    const unverifiedLoginRes = await fetch(`${baseURL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: testEmail,
+        password: 'Password123!'
+      })
+    });
+    assert.strictEqual(unverifiedLoginRes.status, 403, 'Unverified user must receive 403 Forbidden on login');
+    const unverifiedLoginData = await unverifiedLoginRes.json();
+    assert.strictEqual(unverifiedLoginData.code, 'UNVERIFIED_EMAIL', 'Error code must be UNVERIFIED_EMAIL');
+    console.log('   ✓ Unverified user correctly blocked from login with 403 UNVERIFIED_EMAIL.\n');
+
+    // 2c. Verify email directly in DB for integration test progression
+    const User = require('../src/models/User');
+    await User.findByIdAndUpdate(testUserId, { isVerified: true });
+    console.log('   ✓ User email marked as verified.\n');
 
     // 3. User Login
-    console.log('3. Testing User Login...');
+    console.log('3. Testing User Login with Verified Account...');
     const loginRes = await fetch(`${baseURL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -54,6 +73,7 @@ const runAllTests = async () => {
     const loginData = await loginRes.json();
     assert.strictEqual(loginData.success, true);
     assert.ok(loginData.token);
+    userToken = loginData.token;
     console.log('   ✓ Login verification passed.\n');
 
     // 4. Protected Route & Auth Middleware
@@ -249,12 +269,19 @@ Responsibilities: Build enterprise web applications, lead UI architecture, mento
     assert.ok(activityData.activity.jobs.length >= 1);
     console.log(`   ✓ User activity drill-down verified (${activityData.activity.cvs.length} CVs, ${activityData.activity.jobs.length} jobs).\n`);
 
-    // 16. Nodemailer Auth Endpoints (Resend Verification & Forgot Password)
-    console.log('16. Testing Nodemailer Auth Endpoints (Resend Verification & Forgot Password)...');
+    // 16. Nodemailer Auth Endpoints (Resend Verification, Forgot Password, Reset Password)
+    console.log('16. Testing Nodemailer Auth Endpoints (Resend Verification, Forgot Password, Reset Password)...');
+    const freshEmail = `verify_resend_${Date.now()}@hirefit.dev`;
+    await fetch(`${baseURL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Resend Tester', email: freshEmail, password: 'Password123!' })
+    });
+
     const resendRes = await fetch(`${baseURL}/auth/resend-verification`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: testEmail })
+      body: JSON.stringify({ email: freshEmail })
     });
     const resendData = await resendRes.json();
     assert.strictEqual(resendData.success, true);
@@ -266,7 +293,40 @@ Responsibilities: Build enterprise web applications, lead UI architecture, mento
     });
     const forgotData = await forgotRes.json();
     assert.strictEqual(forgotData.success, true);
-    console.log('   ✓ Email verification and password reset workflows tested cleanly.\n');
+
+    // Test Reset Password Execution
+    const crypto = require('crypto');
+    const rawResetToken = 'testresettoken_' + Date.now();
+    const hashedResetToken = crypto.createHash('sha256').update(rawResetToken).digest('hex');
+    await User.findByIdAndUpdate(testUserId, {
+      resetPasswordToken: hashedResetToken,
+      resetPasswordExpire: Date.now() + 3600000
+    });
+
+    const resetRes = await fetch(`${baseURL}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: rawResetToken,
+        newPassword: 'BrandNewPassword456!'
+      })
+    });
+    const resetData = await resetRes.json();
+    assert.strictEqual(resetData.success, true);
+    assert.ok(resetData.token, 'Reset password should issue new login token');
+
+    // Verify login with new password succeeds
+    const newLoginRes = await fetch(`${baseURL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: testEmail,
+        password: 'BrandNewPassword456!'
+      })
+    });
+    const newLoginData = await newLoginRes.json();
+    assert.strictEqual(newLoginData.success, true, 'Login with new password should succeed');
+    console.log('   ✓ Email verification, forgot password, and reset password workflows tested 100% cleanly.\n');
 
     console.log('========================================================================');
     console.log('🎉 ALL 16 INTEGRATION & TELEMETRY TESTS PASSED 100% PERFECTLY!');
